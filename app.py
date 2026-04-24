@@ -1,103 +1,64 @@
 import streamlit as st
 import pandas as pd
+import pydeck as pdk
 
-# 1. Design der Webseite einstellen
-st.set_page_config(page_title="Adressregister Biel", page_icon="🇨🇭", layout="wide")
+st.set_page_config(page_title="Immo-Portal Biel", page_icon="🇨🇭", layout="wide")
 
 @st.cache_data
 def load_data():
-    df = pd.read_excel('Biel_Adressregister_Final.xlsx', sheet_name='Adress-Verzeichnis')
-    df = df.fillna("")
-    return df
+    df = pd.read_excel('Biel_Adressregister_GPS.xlsx')
+    return df.fillna("")
 
-# --- NEU: Der Text-Generator (Macht aus Daten verständliche Sätze) ---
 def generiere_besitz_text(besitz_string):
-    if not besitz_string:
-        return "Die genauen Eigentumsverhältnisse sind leider unbekannt."
-
-    # Hilfsfunktion, um die Codes in schöne Namen zu übersetzen
     def name_finden(text):
         if "01" in text: return "der Stadt Biel"
-        if "02" in text: return "dem Bund, dem Kanton oder einer anderen öffentlichen Institution"
-        if "03" in text: return "einer Privatperson oder einer privaten Firma"
-        return "einem unbekannten Eigentümer"
-
-    # Ist es ein Baurecht? (Schrägstrich vorhanden)
-    if "/" in besitz_string:
-        teile = besitz_string.split(" / ")
-        boden_besitzer = name_finden(teile[0])
-        haus_besitzer = name_finden(teile[1])
-        
-        return f"🏢 **Besondere Situation (Baurecht):** Der Grund und Boden dieser Parzelle gehört **{boden_besitzer}**. Das Gebäude darauf gehört rechtlich jedoch **{haus_besitzer}**."
+        if "03" in text: return "einer Privatperson"
+        return "einer Institution"
     
-    # Kein Baurecht (Normalfall)
-    else:
-        besitzer = name_finden(besitz_string)
-        return f"🏡 **Vollständiges Eigentum:** Sowohl der Boden als auch das Gebäude gehören vollumfänglich **{besitzer}**."
-
-# ----------------------------------------------------------------------
-
-st.title("🏛️ Immobilien-Register der Stadt Biel")
-
-# --- NEU: Tabs für verschiedene Funktionen ---
-tab1, tab2 = st.tabs(["🔍 Einfache Adress-Suche", "📊 Stadt-Portfolio (Entdecken)"])
+    if "/" in str(besitz_string):
+        teile = str(besitz_string).split(" / ")
+        return f"🏢 **Baurecht:** Boden gehört **{name_finden(teile[0])}**, Gebäude gehört **{name_finden(teile[1])}**."
+    return f"🏡 **Volleigentum:** Boden und Gebäude gehören **{name_finden(str(besitz_string))}**."
 
 try:
     df = load_data()
+    st.title("🏛️ Interaktives Immobilien-Register Biel")
     
-    # ==========================================
-    # TAB 1: DIE SUCHE
-    # ==========================================
+    tab1, tab2 = st.tabs(["🔍 Suche & Karte", "📊 Stadt-Portfolio"])
+
     with tab1:
-        st.markdown("Tippe eine Strasse oder Hausnummer ein, um die Eigentumsverhältnisse sofort im Klartext zu sehen.")
-        search_query = st.text_input("Suchen (z.B. 'Südstrasse', 'Schlössli' oder '48'):", "", key="search")
+        search_query = st.text_input("Adresse suchen:", "")
         
         if search_query:
-            mask = df['Adresse'].str.contains(search_query, case=False, na=False)
-            results = df[mask]
-            
-            if len(results) == 0:
-                st.warning("Keine Adresse gefunden. Versuch es mit einem anderen Begriff.")
-            else:
-                st.success(f"**{len(results)} Treffer gefunden**")
-                
-                for index, row in results.iterrows():
+            results = df[df['Adresse'].str.contains(search_query, case=False, na=False)]
+            if not results.empty:
+                # Karte für das gefundene Gebäude
+                st.pydeck_chart(pdk.Deck(
+                    map_style='mapbox://styles/mapbox/light-v9',
+                    initial_view_state=pdk.ViewState(latitude=results.iloc[0]['lat'], longitude=results.iloc[0]['lon'], zoom=17, pitch=45),
+                    layers=[pdk.Layer('ScatterplotLayer', data=results, get_position='[lon, lat]', get_color='[200, 30, 0, 160]', get_radius=10)]
+                ))
+                for _, row in results.iterrows():
                     with st.expander(f"📍 {row['Adresse']}", expanded=True):
-                        # Unser neuer, schöner Fliesstext!
                         st.write(generiere_besitz_text(row['Eigentumsverhältnis']))
-                        
-                        st.markdown("---")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.caption("Grundstücksnummer(n)")
-                            st.write(str(row['Grundstücksnummer(n)']).replace(" / ", "\n\n"))
-                        with col2:
-                            st.caption("Fläche(n)")
-                            st.write(str(row['Fläche(n)']).replace(" / ", "\n\n"))
         else:
-            st.info("👈 Bitte gib oben eine Adresse ein.")
+            # Übersichtskarte von ganz Biel
+            st.pydeck_chart(pdk.Deck(
+                initial_view_state=pdk.ViewState(latitude=47.1367, longitude=7.2468, zoom=12),
+                layers=[pdk.Layer('HexagonLayer', data=df, get_position='[lon, lat]', radius=100, elevation_scale=4, elevation_range=[0, 1000], pickable=True, extinct=True)]
+            ))
 
-    # ==========================================
-    # TAB 2: DIE SPIELEREIEN (Stadt-Portfolio)
-    # ==========================================
     with tab2:
-        st.header("Was gehört eigentlich der Stadt?")
-        st.markdown("Hier kannst du das Immobilien-Portfolio der Einwohnergemeinde Biel durchstöbern.")
+        stadt_df = df[df['Eigentumsverhältnis'].str.contains("01", na=False)]
+        st.metric("Gebäude im Stadtbesitz", len(stadt_df))
         
-        # Wir filtern alle Adressen, bei denen "01" (Stadt) vorkommt
-        stadt_mask = df['Eigentumsverhältnis'].str.contains("01", na=False)
-        stadt_df = df[stadt_mask].copy()
-        
-        # Ein paar coole Statistiken für die Nutzer
-        st.metric(label="Anzahl gefundener Adressen mit städtischer Beteiligung", value=len(stadt_df))
-        
-        st.markdown("### Alle städtischen Adressen auf einen Blick:")
-        # Eine interaktive Tabelle anzeigen
-        st.dataframe(
-            stadt_df[['Adresse', 'Eigentumsverhältnis', 'Fläche(n)']], 
-            use_container_width=True,
-            hide_index=True
-        )
+        # Karte aller städtischen Gebäude
+        st.pydeck_chart(pdk.Deck(
+            map_style='mapbox://styles/mapbox/dark-v9',
+            initial_view_state=pdk.ViewState(latitude=47.1367, longitude=7.2468, zoom=13),
+            layers=[pdk.Layer('ScatterplotLayer', data=stadt_df, get_position='[lon, lat]', get_color='[0, 255, 100, 200]', get_radius=20)]
+        ))
+        st.dataframe(stadt_df[['Adresse', 'Fläche(n)']], use_container_width=True)
 
 except Exception as e:
-    st.error(f"Ein Fehler ist aufgetreten: {e}")
+    st.error(f"Fehler: {e}")
